@@ -1,6 +1,7 @@
 import socket, sys
 from struct import *
 
+
 def checksum(msg):
     s = 0
     for i in range(0, len(msg)-1, 2):
@@ -8,7 +9,9 @@ def checksum(msg):
         s += tmp
         s = (s & 0xffff) + (s >> 16)
     return ~s & 0xffff
-packet = '';
+
+
+packet = ''
  
 
 try:
@@ -71,7 +74,6 @@ tcp_length = len(tcp_header) + len(user_data)
  
 psh = pack('!4s4sBBH' , source_address , dest_address , placeholder , protocol , tcp_length);
 psh = psh + tcp_header + user_data
-print(psh)
 tcp_check = checksum(psh)
 #print tcp_checksum
  
