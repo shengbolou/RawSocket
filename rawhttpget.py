@@ -1,5 +1,26 @@
 import socket, sys
+import random
 from struct import *
+
+
+source_ip = '10.0.2.15'
+
+dest_ip = socket.gethostbyname("elsrv2.cs.umass.edu")
+print dest_ip
+
+try:
+    sendSocket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+except socket.error, msg:
+    print
+    'Send socket could not be created. Error Code : ' + str(msg[0]) + ' Message ' + msg[1]
+    sys.exit()
+
+try:
+    receiveSocket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
+except socket.error, msg:
+    print
+    'Receive socket could not be created. Error Code : ' + str(msg[0]) + ' Message ' + msg[1]
+    sys.exit()
 
 
 def checksum(msg):
@@ -11,30 +32,13 @@ def checksum(msg):
     return ~s & 0xffff
 
 
-
-
-source_ip = '10.0.2.15'
-dest_ip = socket.gethostbyname("elsrv2.cs.umass.edu")
-print(dest_ip)
-
-
-try:
-    s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
-except socket.error, msg:
-    print
-    'Socket could not be created. Error Code : ' + str(msg[0]) + ' Message ' + msg[1]
-    sys.exit()
-
-
-def send(id, data, seq, ack_seq, syn, ack):
-    packet = ''
-
+def generate_ip_header():
     # ip header fields
     ip_ihl = 5
     ip_ver = 4
     ip_tos = 0
     ip_tot_len = 0  # kernel will fill the correct total length
-    ip_id = id  # Id of this packet
+    ip_id = random.randint(1, 10000)  # Id of this packet
     ip_frag_off = 0
     ip_ttl = 255
     ip_proto = socket.IPPROTO_TCP
@@ -47,7 +51,10 @@ def send(id, data, seq, ack_seq, syn, ack):
     # the ! in the pack format string means network order
     ip_header = pack('!BBHHHBBH4s4s', ip_ihl_ver, ip_tos, ip_tot_len, ip_id, ip_frag_off, ip_ttl, ip_proto, ip_check,
                      ip_saddr, ip_daddr)
+    return ip_header
 
+
+def generate_tcp_header(seq, ack_seq, syn, ack, data=""):
     # tcp header fields
     tcp_source = 1234  # source port
     tcp_dest = 80  # destination port
@@ -90,51 +97,74 @@ def send(id, data, seq, ack_seq, syn, ack):
     # make the tcp header again and fill the correct checksum - remember checksum is NOT in network byte order
     tcp_header = pack('!HHLLBBH', tcp_source, tcp_dest, tcp_seq, tcp_ack_seq, tcp_offset_res, tcp_flags,
                       tcp_window) + pack('H', tcp_check) + pack('!H', tcp_urg_ptr)
-    # final full packet - syn packets dont have any data
-    packet = ip_header + tcp_header + user_data
 
-    # Send the packet finally - the port specified has no effect
-    s.sendto(packet, (dest_ip, 0))
+    return tcp_header
 
 
-send(1212, "", 454, 0, 1, 0)
+def validate_tcp_checksum(len, data):
+    tcp_length = len
+    tcp_data = data
+    source_address = socket.inet_aton(source_ip)
+    dest_address = socket.inet_aton(dest_ip)
+    placeholder = 0
+    protocol = socket.IPPROTO_TCP
+    psh = pack('!4s4sBBH', source_address, dest_address, placeholder, protocol, tcp_length)
+    psh = psh + tcp_data
 
-try:
-    receiveSocket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
-except socket.error:
-    sys.exit()
+    return checksum(psh)==0
 
-count=0
 
-while(True):
+def receive():
+    while(True):
+        resPacket = receiveSocket.recvfrom(65565)[0]
+        iph = resPacket[0:20]
+        source = socket.inet_ntoa(iph[12:16])
+        if source == dest_ip and checksum(iph)==0:
+            tcp_length = int(resPacket[32].encode('hex'), 16)/4
+            tcp_data = resPacket[20:20+tcp_length]
+            if validate_tcp_checksum(tcp_length,tcp_data):
+                print(":".join("{:02x}".format(ord(c)) for c in iph))
+                print(":".join("{:02x}".format(ord(c)) for c in tcp_data))
+                return resPacket
 
-    response = receiveSocket.recvfrom(65565)
-    resPacket = response[0]
-    iph = resPacket[0:20]
-    source = socket.inet_ntoa(iph[12:16])
-    print "source: %s" % str(source)
-    print "ip checksum: %d"%checksum(iph)
-    if source == dest_ip:
-        # pseudo header fields
-        tcp_length = int(resPacket[32].encode('hex'), 16)/4
-        print "tcp length: %d"% tcp_length
-        tcp_data = resPacket[20:20+tcp_length]
-        print(":".join("{:02x}".format(ord(c)) for c in tcp_data))
 
-        # validating tcp checksum
-        source_address = socket.inet_aton(source_ip)
-        dest_address = socket.inet_aton(dest_ip)
-        placeholder = 0
-        protocol = socket.IPPROTO_TCP
-        psh = pack('!4s4sBBH', source_address, dest_address, placeholder, protocol, tcp_length)
-        psh = psh + tcp_data
-        print "tcp checksum: %d" % checksum(psh)
+def receive_ack(seq):
+    resPacket = receive()
+    tcp_length = int(resPacket[32].encode('hex'), 16) / 4
+    tcp_data = resPacket[20:20 + tcp_length]
+    tcp_flag = tcp_data[12:14]&16
+    if tcp_flag&16==16:
+        recv_seq_num = int(tcp_data[4:8].encode('hex'), 16)
+        recv_ack_num = int(tcp_data[8:12].encode('hex'), 16)
+        if recv_ack_num == seq+1:
+            return recv_seq_num
+        else: return False
 
-        seq_num = int(tcp_data[4:8].encode('hex'), 16)
-        ack_num = int(tcp_data[8:12].encode('hex'), 16)
+def initialize_conn():
+    ip_header = generate_ip_header()
+    tcp_header = generate_tcp_header(454, 0, 1, 0)
+    packet = ip_header + tcp_header
 
-        print(seq_num)
-        print(ack_num)
+    sendSocket.sendto(packet, (dest_ip, 0))
+
+    res = receive_ack(454)
+    print res
+
+    if res!=False:
+        ip_header = generate_ip_header()
+        tcp_header = generate_tcp_header(455, res+1, 0, 1)
+        packet = ip_header + tcp_header
+
+        sendSocket.sendto(packet, (dest_ip, 0))
+    else:
+        print "conn error!"
+
+
+
+initialize_conn()
+
+
+
 
 
 
