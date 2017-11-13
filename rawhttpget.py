@@ -25,11 +25,12 @@ except socket.error, msg:
 
 def checksum(msg):
     s = 0
-    for i in range(0, len(msg)-1, 2):
+    for i in range(0, len(msg), 2):
         tmp = (ord(msg[i + 1])<<8) + ord(msg[i])
         s += tmp
         s = (s & 0xffff) + (s >> 16)
     return ~s & 0xffff
+
 
 
 def generate_ip_header():
@@ -54,7 +55,7 @@ def generate_ip_header():
     return ip_header
 
 
-def generate_tcp_header(seq, ack_seq, syn, ack, data=""):
+def generate_tcp_header(seq, ack_seq, syn, ack, fin=0, data=""):
     # tcp header fields
     tcp_source = 1234  # source port
     tcp_dest = 80  # destination port
@@ -62,7 +63,7 @@ def generate_tcp_header(seq, ack_seq, syn, ack, data=""):
     tcp_ack_seq = ack_seq
     tcp_doff = 5  # 4 bit field, size of tcp header, 5 * 4 = 20 bytes
     # tcp flags
-    tcp_fin = 0
+    tcp_fin = fin
     tcp_syn = syn
     tcp_rst = 0
     tcp_psh = 0
@@ -75,28 +76,30 @@ def generate_tcp_header(seq, ack_seq, syn, ack, data=""):
     tcp_offset_res = (tcp_doff << 4) + 0
     tcp_flags = tcp_fin + (tcp_syn << 1) + (tcp_rst << 2) + (tcp_psh << 3) + (tcp_ack << 4) + (tcp_urg << 5)
 
+    data_len = len(data)
+    data_len = data_len+1 if data_len%2==1 else data_len
     # the ! in the pack format string means network order
-    tcp_header = pack('!HHLLBBHHH', tcp_source, tcp_dest, tcp_seq, tcp_ack_seq, tcp_offset_res, tcp_flags, tcp_window,
-                      tcp_check, tcp_urg_ptr)
+    tcp_header = pack('!HHLLBBHHH'+str(data_len)+"s",
+                      tcp_source, tcp_dest, tcp_seq, tcp_ack_seq, tcp_offset_res, tcp_flags, tcp_window,
+                      tcp_check, tcp_urg_ptr, data)
 
-    user_data = data
 
     # pseudo header fields
     source_address = socket.inet_aton(source_ip)
     dest_address = socket.inet_aton(dest_ip)
     placeholder = 0
     protocol = socket.IPPROTO_TCP
-    tcp_length = len(tcp_header) + len(user_data)
+    tcp_length = len(str(tcp_header))
 
     psh = pack('!4s4sBBH', source_address, dest_address, placeholder, protocol, tcp_length)
-    psh = psh + tcp_header + user_data
+    psh = psh + tcp_header
 
     tcp_check = checksum(psh)
 
 
     # make the tcp header again and fill the correct checksum - remember checksum is NOT in network byte order
     tcp_header = pack('!HHLLBBH', tcp_source, tcp_dest, tcp_seq, tcp_ack_seq, tcp_offset_res, tcp_flags,
-                      tcp_window) + pack('H', tcp_check) + pack('!H', tcp_urg_ptr)
+                      tcp_window) + pack('H', tcp_check) + pack("!H"+str(data_len)+"s", tcp_urg_ptr, data)
 
     return tcp_header
 
@@ -132,13 +135,14 @@ def receive_ack(seq):
     resPacket = receive()
     tcp_length = int(resPacket[32].encode('hex'), 16) / 4
     tcp_data = resPacket[20:20 + tcp_length]
-    tcp_flag = tcp_data[12:14]&16
-    if tcp_flag&16==16:
+    tcp_flag = int(tcp_data[12:14].encode('hex'), 16)&16
+    if tcp_flag==16:
         recv_seq_num = int(tcp_data[4:8].encode('hex'), 16)
         recv_ack_num = int(tcp_data[8:12].encode('hex'), 16)
         if recv_ack_num == seq+1:
-            return recv_seq_num
-        else: return False
+            return recv_seq_num,resPacket
+        else:
+            return False,resPacket
 
 def initialize_conn():
     ip_header = generate_ip_header()
@@ -147,23 +151,51 @@ def initialize_conn():
 
     sendSocket.sendto(packet, (dest_ip, 0))
 
-    res = receive_ack(454)
-    print res
+    ack, resPacket = receive_ack(454)
+    print ack
 
-    if res!=False:
+    if ack!=False:
         ip_header = generate_ip_header()
-        tcp_header = generate_tcp_header(455, res+1, 0, 1)
+        tcp_header = generate_tcp_header(455, ack+1, 0, 1)
         packet = ip_header + tcp_header
-
         sendSocket.sendto(packet, (dest_ip, 0))
+        return ack, 456
     else:
         print "conn error!"
 
+def terminate():
+    ip_header = generate_ip_header()
+    tcp_header = generate_tcp_header(454, 0, 0, 0, fin=1)
+    packet = ip_header + tcp_header
 
+    sendSocket.sendto(packet, (dest_ip, 0))
 
-initialize_conn()
+    ack, resPacket = receive_ack(454)
+    print ack
 
+    if ack!=False:
+        ip_header = generate_ip_header()
+        tcp_header = generate_tcp_header(455, ack+1, 0, 1)
+        packet = ip_header + tcp_header
+        sendSocket.sendto(packet, (dest_ip, 0))
+        return ack, 456
+    else:
+        print "terminate error!"
 
+def send_get(ack, seq):
+    get_message = "GET / HTTP/1.0\r\nHost: elsrv2.cs.umass.edu\r\n\r\n"
+    ip_header = generate_ip_header()
+    tcp_header = generate_tcp_header(seq, ack+1, 0, 1, data=get_message)
+    packet = ip_header+tcp_header
+
+    sendSocket.sendto(packet, (dest_ip, 0))
+
+    ack, resPacket = receive_ack(seq)
+    return ack,resPacket
+
+ack, seq = initialize_conn()
+new_ack = send_get(ack, seq)
+terminate()
 
 
 
