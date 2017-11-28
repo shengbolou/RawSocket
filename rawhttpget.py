@@ -1,12 +1,27 @@
-import socket, sys
+import socket
 import random
 from struct import *
+from urlparse import urlparse
+import sys
+
+url = urlparse(sys.argv[1])
+hostname = url.netloc
+path = url.path
+possible_file_name = path.split("/")[-1]
+filename = possible_file_name if "." in possible_file_name else "index.html"
 
 
-source_ip = '10.0.2.15'
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM,0)
+s.connect(("google.com",80))
+source_ip = s.getsockname()[0]
+s.close()
 
-dest_ip = socket.gethostbyname("elsrv2.cs.umass.edu")
+
+dest_ip = socket.gethostbyname(hostname)
+
 print dest_ip
+
+seq_num = random.randint(1000, 10000)
 
 try:
     sendSocket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
@@ -122,22 +137,19 @@ def validate_tcp_checksum(resPacket, data_len):
 def receive():
     while(True):
         resPacket = receiveSocket.recvfrom(65565)
-        # print "raw"
-        # print resPacket
-        # print
         resPacket = resPacket[0]
         iph = resPacket[0:20]
         source = socket.inet_ntoa(iph[12:16])
         if source == dest_ip and checksum(iph)==0:
-            data_len = int(iph[2:4].encode('hex'), 16)-40
-
-            print "correct length? %d" % data_len
-            print "formatted"
-            print(":".join("{:02x}".format(ord(c)) for c in resPacket))
-            print
-            print validate_tcp_checksum(resPacket, data_len)
-            if validate_tcp_checksum(resPacket, data_len):
-                return resPacket
+            # data_len = int(iph[2:4].encode('hex'), 16)-40
+            # print "raw"
+            # print resPacket
+            # print
+            # print "correct length? %d" % data_len
+            # print "formatted"
+            # print(":".join("{:02x}".format(ord(c)) for c in resPacket))
+            # print
+            return resPacket
 
 
 def receive_ack(seq):
@@ -154,65 +166,69 @@ def receive_ack(seq):
 
 def initialize_conn():
     ip_header = generate_ip_header()
-    tcp_header = generate_tcp_header(454, 0, 1, 0)
+    tcp_header = generate_tcp_header(seq_num, 0, 1, 0)
     packet = ip_header + tcp_header
 
     sendSocket.sendto(packet, (dest_ip, 0))
 
-    ack, resPacket = receive_ack(454)
+    ack, resPacket = receive_ack(seq_num)
 
     if ack!=False:
         ip_header = generate_ip_header()
-        tcp_header = generate_tcp_header(455, ack+1, 0, 1)
+        tcp_header = generate_tcp_header(seq_num+1, ack+1, 0, 1)
         packet = ip_header + tcp_header
         sendSocket.sendto(packet, (dest_ip, 0))
-        return ack, 455
+        return ack, seq_num+1
     else:
         print "conn error!"
 
 
 def reset():
     ip_header = generate_ip_header()
-    tcp_header = generate_tcp_header(454, 0, 0, 0, rst=1)
+    tcp_header = generate_tcp_header(seq_num, 0, 0, 0, rst=1)
     packet = ip_header + tcp_header
 
     sendSocket.sendto(packet, (dest_ip, 0))
 
 
 def send_get(ack, seq):
-    get_message = "GET / HTTP/1.0\r\nHost: elsrv2.cs.umass.edu\r\n\r\n"
+    get_message = "GET " + path + " HTTP/1.0\r\nHost:" + hostname + "\r\n\r\n"
     ip_header = generate_ip_header()
     tcp_header = generate_tcp_header(seq, ack+1, 0, 1, psh=1, data=get_message)
     packet = ip_header+tcp_header
     sendSocket.sendto(packet, (dest_ip, 0))
 
 def receive_file_and_terminate():
-    data = ""
+    res = {}
     while(True):
         resPacket = receive()
         iph = resPacket[0:20]
         data_len = int(iph[2:4].encode('hex'), 16)-40
-        print "data length: %d" % data_len
+        # print "data length: %d" % data_len
         tcp_header = resPacket[20:40]
         tcp_flag = int(tcp_header[12:14].encode('hex'), 16) & 17
-        print tcp_flag
+        # print "tcp flag: %d" % tcp_flag
         recv_ack_num = int(tcp_header[8:12].encode('hex'), 16)
         recv_seq_num = int(tcp_header[4:8].encode('hex'), 16)
-        if tcp_flag == 17: # fin-psh-ack or fin-ack, terminate
-            ip_header = generate_ip_header()
-            tcp_header = generate_tcp_header(recv_ack_num, recv_seq_num+data_len+1, 0, 1,fin=1)
-            packet = ip_header + tcp_header
-            sendSocket.sendto(packet, (dest_ip, 0))
-            return data
-            # return data
-        if data_len>0: # get the data
-            data = unpack("!"+str(data_len)+"s", resPacket[40:40+data_len])
+
+        if data_len>0:  # get the data
+            data = unpack("!"+str(data_len)+"s", resPacket[40:40+data_len])[0]
+            res[recv_seq_num] = data
+            print "tcp checksum: %s" % validate_tcp_checksum(resPacket, data_len)
+            if not validate_tcp_checksum(resPacket, data_len):
+                continue
             ip_header = generate_ip_header()
             tcp_header = generate_tcp_header(recv_ack_num, recv_seq_num+data_len, 0, 1)
             packet = ip_header + tcp_header
 
             sendSocket.sendto(packet, (dest_ip, 0))
 
+        if tcp_flag == 17:  # fin-psh-ack or fin-ack, terminate
+            ip_header = generate_ip_header()
+            tcp_header = generate_tcp_header(recv_ack_num, recv_seq_num+data_len+1, 0, 1,fin=1)
+            packet = ip_header + tcp_header
+            sendSocket.sendto(packet, (dest_ip, 0))
+            return res
 
 
 # reset()
@@ -220,14 +236,24 @@ def receive_file_and_terminate():
 ack, seq = initialize_conn()
 send_get(ack, seq)
 data = receive_file_and_terminate()
-data = data[0]
-idx = data.find("\r\n\r\n")
-f = open('test.html','wb')
-f.write(data[idx+4:])
+print
+print data
+print
+body = ""
+for key in sorted(data):
+    body = body + data[key]
+
+if body.find("200 OK")<0:
+    print "STATUS CODE NOT 200"
+    sys.exit(1)
+
+idx = body.find("\r\n\r\n")
+f = open(filename,'wb')
+f.write(body[idx+4:])
+
 f.close()
-
-
-
+sendSocket.close()
+receiveSocket.close()
 
 
 
