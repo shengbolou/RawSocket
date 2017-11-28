@@ -178,24 +178,6 @@ def reset():
 
     sendSocket.sendto(packet, (dest_ip, 0))
 
-def terminate(seq,ack):
-    ip_header = generate_ip_header()
-    tcp_header = generate_tcp_header(seq, ack+1, 0, 1, fin=1)
-    packet = ip_header + tcp_header
-
-    sendSocket.sendto(packet, (dest_ip, 0))
-
-    recack, resPacket = receive_ack(seq) # receive ack
-
-    if recack != False:
-        recack, resPacket = receive_ack(seq) # receive syn-ack
-
-        ip_header = generate_ip_header()
-        tcp_header = generate_tcp_header(seq+1, recack+1, 0, 1)
-        packet = ip_header + tcp_header
-        sendSocket.sendto(packet, (dest_ip, 0))
-    else:
-        print "terminate error!"
 
 def send_get(ack, seq):
     get_message = "GET / HTTP/1.0\r\nHost: elsrv2.cs.umass.edu\r\n\r\n"
@@ -212,27 +194,32 @@ def receive_file_and_terminate():
         data_len = int(iph[2:4].encode('hex'), 16)-40
         print "data length: %d" % data_len
         tcp_header = resPacket[20:40]
-        tcp_flag = int(tcp_header[12:14].encode('hex'), 16) & 25
+        tcp_flag = int(tcp_header[12:14].encode('hex'), 16) & 17
         print tcp_flag
-        if tcp_flag==25: # fin-psh-ack, terminate
-            recv_seq_num = int(tcp_header[4:8].encode('hex'), 16)
-            recv_ack_num = int(tcp_header[8:12].encode('hex'), 16)
+        recv_ack_num = int(tcp_header[8:12].encode('hex'), 16)
+        recv_seq_num = int(tcp_header[4:8].encode('hex'), 16)
+        if tcp_flag == 17: # fin-psh-ack or fin-ack, terminate
+            ip_header = generate_ip_header()
+            tcp_header = generate_tcp_header(recv_ack_num, recv_seq_num+data_len+1, 0, 1,fin=1)
+            packet = ip_header + tcp_header
+            sendSocket.sendto(packet, (dest_ip, 0))
+            return data
+            # return data
+        if data_len>0: # get the data
+            data = unpack("!"+str(data_len)+"s", resPacket[40:40+data_len])
             ip_header = generate_ip_header()
             tcp_header = generate_tcp_header(recv_ack_num, recv_seq_num+data_len, 0, 1)
             packet = ip_header + tcp_header
 
             sendSocket.sendto(packet, (dest_ip, 0))
 
-            return data
-        if data_len>0: # get the data
-            data = unpack("!"+str(data_len)+"s", resPacket[40:40+data_len])
 
 
+# reset()
 
 ack, seq = initialize_conn()
 send_get(ack, seq)
 data = receive_file_and_terminate()
-# print data
 data = data[0]
 idx = data.find("\r\n\r\n")
 f = open('test.html','wb')
@@ -240,7 +227,6 @@ f.write(data[idx+4:])
 f.close()
 
 
-# reset()
 
 
 
