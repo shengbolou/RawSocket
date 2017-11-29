@@ -21,6 +21,8 @@ dest_ip = socket.gethostbyname(hostname)
 
 print dest_ip
 
+# sys.exit(0)
+
 seq_num = random.randint(1000, 10000)
 
 try:
@@ -214,9 +216,9 @@ def receive_file_and_terminate():
         if data_len>0:  # get the data
             data = unpack("!"+str(data_len)+"s", resPacket[40:40+data_len])[0]
             res[recv_seq_num] = data
-            print "tcp checksum: %s" % validate_tcp_checksum(resPacket, data_len)
-            if not validate_tcp_checksum(resPacket, data_len):
-                continue
+            # print "seq num: %d tcp checksum: %s" % recv_seq_num, validate_tcp_checksum(resPacket, data_len)
+            # if not validate_tcp_checksum(resPacket, data_len):
+            #     continue
             ip_header = generate_ip_header()
             tcp_header = generate_tcp_header(recv_ack_num, recv_seq_num+data_len, 0, 1)
             packet = ip_header + tcp_header
